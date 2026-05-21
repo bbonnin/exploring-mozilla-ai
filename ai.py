@@ -1,6 +1,6 @@
 """
-llm.py
-Abstraction LLM basée sur any-llm
+ai.py
+Abstraction AI basée sur any-llm, any-agent
 """
 
 import os

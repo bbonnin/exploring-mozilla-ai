@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from rich.live import Live
 import ui
-import llm
+import ai
 
 
 # --- Commandes ---------------------------------------------------------------
@@ -29,49 +29,49 @@ def show_help() -> None:
 
 
 def show_status() -> None:
-    if not llm.is_model_configured():
+    if not ai.is_model_configured():
         ui.print_error("Aucun fournisseur/modèle configuré, utilisez 'setmodel'")
         return
     ui.print_key_value_panel("État courant", [
-        ("Fournisseur", llm.get_active_provider()),
-        ("Modèle",      llm.state["model"]),
-        ("Messages",    f"{len(llm.state['history']) // 2} échanges en mémoire"),
-        ("Température", str(llm.state["temperature"])),
-        ("Max tokens",  str(llm.state["max_tokens"])),
+        ("Fournisseur", ai.get_active_provider()),
+        ("Modèle",      ai.state["model"]),
+        ("Messages",    f"{len(ai.state['history']) // 2} échanges en mémoire"),
+        ("Température", str(ai.state["temperature"])),
+        ("Max tokens",  str(ai.state["max_tokens"])),
     ])
 
 
 def configure_settings() -> None:
     ui.print_key_value_panel("Paramètres actuels", [
-        ("Température", str(llm.state["temperature"])),
-        ("Max tokens",  str(llm.state["max_tokens"])),
+        ("Température", str(ai.state["temperature"])),
+        ("Max tokens",  str(ai.state["max_tokens"])),
     ])
     ui.print_info("Appuyez sur Entrée pour conserver la valeur actuelle")
 
     new_temp = ui.ask_float(
-        f"Température [dim](0.0 – 2.0, actuel : {llm.state['temperature']})[/dim]",
-        default=llm.state["temperature"],
+        f"Température [dim](0.0 – 2.0, actuel : {ai.state['temperature']})[/dim]",
+        default=ai.state["temperature"],
     )
     if new_temp is not None:
-        llm.state["temperature"] = round(max(0.0, min(2.0, new_temp)), 2)
+        ai.state["temperature"] = round(max(0.0, min(2.0, new_temp)), 2)
 
     new_max = ui.ask_int(
-        f"Max tokens [dim](actuel : {llm.state['max_tokens']})[/dim]",
-        default=llm.state["max_tokens"],
+        f"Max tokens [dim](actuel : {ai.state['max_tokens']})[/dim]",
+        default=ai.state["max_tokens"],
     )
     if new_max is not None:
-        llm.state["max_tokens"] = max(1, new_max)
+        ai.state["max_tokens"] = max(1, new_max)
 
     ui.print_text_panel(
         f":wrench: [bold green]Paramètres mis à jour[/bold green]\n"
-        f"Température : {llm.state['temperature']}\n"
-        f"Max tokens  : {llm.state['max_tokens']}",
+        f"Température : {ai.state['temperature']}\n"
+        f"Max tokens  : {ai.state['max_tokens']}",
         border_style="green",
     )
 
 
 def _select_provider(active: str = "") -> Optional[str]:
-    providers = llm.get_providers()
+    providers = ai.get_providers()
     active_label = next((label for key, label in providers if key == active), "")
     idx = ui.select_from_list(
         "[not italic]:office_building:[/not italic] Fournisseurs disponibles",
@@ -82,13 +82,13 @@ def _select_provider(active: str = "") -> Optional[str]:
 
 
 def _select_model(provider_key: str, display_current: bool = True) -> Optional[str]:
-    models = llm.get_models(provider_key)
+    models = ai.get_models(provider_key)
     if not models:
         ui.print_error(f"Aucun modèle chargé pour '{provider_key}', lancez 'loadmodels' d'abord")
         return None
     current = (
-        llm.state["model"]
-        if display_current and provider_key == llm.state["provider"]
+        ai.state["model"]
+        if display_current and provider_key == ai.state["provider"]
         else ""
     )
     idx = ui.select_from_list("[not italic]:brain:[/not italic] Modèles disponibles", models, current=current)
@@ -96,18 +96,18 @@ def _select_model(provider_key: str, display_current: bool = True) -> Optional[s
 
 
 def change_model() -> None:
-    chosen_provider = _select_provider(llm.state["provider"])
+    chosen_provider = _select_provider(ai.state["provider"])
     if not chosen_provider:
         return
     chosen_model = _select_model(chosen_provider)
     if not chosen_model:
         return
 
-    llm.set_active_model(chosen_provider, chosen_model)
+    ai.set_active_model(chosen_provider, chosen_model)
 
     ui.print_text_panel(
         f":brain: [bold green]Modèle sélectionné[/bold green]\n"
-        f"{llm.get_active_provider()} / {chosen_model}\n"
+        f"{ai.get_active_provider()} / {chosen_model}\n"
         f"[dim]Historique réinitialisé[/dim]",
         border_style="green",
     )
@@ -115,9 +115,9 @@ def change_model() -> None:
 
 def load_models() -> None:
     with ui.spinner("Chargement des modèles en cours..."):
-        for provider_key, provider_label in llm.get_providers():
+        for provider_key, provider_label in ai.get_providers():
             try:
-                model_ids = llm.fetch_models(provider_key)
+                model_ids = ai.fetch_models(provider_key)
                 ui.print_info(f":brain: {provider_label} — {len(model_ids)} modèles chargés")
                 for mid in model_ids:
                     ui.print_info(f"  - {mid}")
@@ -126,21 +126,21 @@ def load_models() -> None:
 
 
 def clear_history() -> None:
-    llm.state["history"].clear()
+    ai.state["history"].clear()
     ui.print_info("Historique effacé")
 
 
 # --- Mode chat simple --------------------------------------------------------
 
 def mode_chat() -> None:
-    if not llm.is_model_configured():
+    if not ai.is_model_configured():
         ui.print_error("Aucun modèle configuré, utilisez 'setmodel'")
         return
  
     ui.print_text_panel(
         f":speech_balloon: [bold cyan]Mode CHAT[/bold cyan]\n"
-        f"[dim]{llm.get_active_provider()} / {llm.state['model']}  |  "
-        f"temp={llm.state['temperature']}  max_tokens={llm.state['max_tokens']}[/dim]\n\n"
+        f"[dim]{ai.get_active_provider()} / {ai.state['model']}  |  "
+        f"temp={ai.state['temperature']}  max_tokens={ai.state['max_tokens']}[/dim]\n\n"
         f"Tapez votre message. Commandes : [bold]/reset[/bold]  [bold]/bye[/bold]",
         border_style="cyan",
     )
@@ -158,20 +158,20 @@ def mode_chat() -> None:
             clear_history()
             continue
  
-        llm.state["history"].append({"role": "user", "content": user_input})
+        ai.state["history"].append({"role": "user", "content": user_input})
         try:
             with ui.spinner("Réflexion en cours..."):
-                reply = llm.complete(
-                    llm.state["provider"],
-                    llm.state["model"],
-                    llm.state["history"],
-                    llm.state["temperature"],
-                    llm.state["max_tokens"],
+                reply = ai.complete(
+                    ai.state["provider"],
+                    ai.state["model"],
+                    ai.state["history"],
+                    ai.state["temperature"],
+                    ai.state["max_tokens"],
                 )
-            llm.state["history"].append({"role": "assistant", "content": reply})
+            ai.state["history"].append({"role": "assistant", "content": reply})
             ui.print_message("Réponse", reply)
         except Exception as e:
-            llm.state["history"].pop()
+            ai.state["history"].pop()
             ui.print_error(f"Erreur lors de la complétion : {e}")
  
 
@@ -188,7 +188,7 @@ def _select_models_for_compare() -> List[Tuple[str, str]]:
 
     while True:
         if selected:
-            providers_by_key = {prov: label for prov, label, *_ in llm.get_providers()}
+            providers_by_key = {prov: label for prov, label, *_ in ai.get_providers()}
             ui.print_key_value_panel(
                 "Modèles sélectionnés",
                 [
@@ -217,7 +217,7 @@ def _select_models_for_compare() -> List[Tuple[str, str]]:
             ui.print_info("Ce modèle est déjà dans la liste.")
         else:
             selected.append(pair)
-            providers = dict(llm.get_providers())
+            providers = dict(ai.get_providers())
             ui.print_info(f"Ajouté : {providers[provider_key]} / {model}")
 
     return selected
@@ -233,7 +233,7 @@ def _query_model(
     start = time.perf_counter()
 
     try:
-        result = llm.complete_with_metadata(provider_key, model, messages, temperature, max_tokens)
+        result = ai.complete_with_metadata(provider_key, model, messages, temperature, max_tokens)
         elapsed = f"{time.perf_counter() - start:.2f} s"
         total_tokens = result.get("total_tokens")
         tokens = str(total_tokens) if total_tokens is not None else "—"
@@ -264,12 +264,12 @@ def mode_compare() -> None:
         ui.print_error("Il faut au moins 2 modèles pour une comparaison.")
         return
 
-    providers_map = dict(llm.get_providers())
+    providers_map = dict(ai.get_providers())
 
     ui.print_text_panel(
         f":bar_chart: [bold cyan]Mode COMPARE[/bold cyan]\n"
         f"[dim]{len(selected)} modèles | "
-        f"temp={llm.state['temperature']} max_tokens={llm.state['max_tokens']}[/dim]\n\n"
+        f"temp={ai.state['temperature']} max_tokens={ai.state['max_tokens']}[/dim]\n\n"
         f"Tapez votre question. Commande : [bold]/bye[/bold]",
         border_style="cyan",
     )
@@ -308,8 +308,8 @@ def mode_compare() -> None:
                     prov,
                     model,
                     messages,
-                    llm.state["temperature"],
-                    llm.state["max_tokens"],
+                    ai.state["temperature"],
+                    ai.state["max_tokens"],
                 ): (prov, model)
                 for prov, model in selected
             }
@@ -342,7 +342,7 @@ def main() -> None:
     ui.print_info("\nBonjour !\n")
 
     try:
-        llm.init_state()
+        ai.init_state()
     except ValueError as e:
         ui.print_error(str(e))
 
