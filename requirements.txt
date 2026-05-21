@@ -1,3 +1,4 @@
 any-llm-sdk[anthropic,ollama]
+any-agent
 rich
 python-dotenv

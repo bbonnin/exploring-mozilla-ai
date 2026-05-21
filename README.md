@@ -1,6 +1,6 @@
-# mozilla-ai-tests
+# Exploring Mozilla AI libs
 
-> Tests of Mozilla libs (any-llm, any-agent, ...)
+> Some examples for [any-llm](https://github.com/mozilla-ai/any-llm), any-agent, ...
 
 
 ## Exploring...
@@ -13,6 +13,10 @@ PROVIDERS=ollama,anthropic
 # Provider and model to use by default
 DEFAULT_MODEL=ollama/ministral-3:3b
 
+# Other LLM parameters
+DEFAULT_TEMPERATURE=0.0
+DEFAULT_MAX_TOKENS=1024
+
 # Ollama configuration (if not localhost)
 OLLAMA_HOST="http://example.com:11434"
 
@@ -20,9 +24,21 @@ OLLAMA_HOST="http://example.com:11434"
 ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-* [exploring-any-llm.py](exploring-any-llm.py): how to use [any-llm](https://github.com/mozilla-ai/any-llm), the same code for any LLM providers, that's great !
+* Then, launch [exploring-any-llm.py](exploring-any-llm.py): with `any-llm`, the same code for any LLM providers, that's great !
+  * Load the models:
+![Load models](./img/load_models.png)
+  * Select the model for the chat:
+![Select a model](./img/select_model.png)
+  * Chat:
+![Chat](./img/chat.png)
+  * Compare models - choose the models:
+![Choose a model](./img/compare_choose_model_1.png)
+![Choose another model](./img/compare_choose_model_2.png)
+  * Compare models - ask something et see the result:
+![Compare models](./img/compare_result.png)
 
 
 ## TODO
 
-* Translate into english (désolé...)
+* [ ] Translate into english (désolé...)
+

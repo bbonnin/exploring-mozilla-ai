@@ -1,284 +1,384 @@
-import os
+"""
+main.py
+Point d'entrée et boucle REPL
+"""
+
 import sys
-from typing import List, Dict
-from dotenv import load_dotenv
-
-from rich.console import Console
-from rich.panel import Panel
-from rich.prompt import Prompt, IntPrompt
-from rich.table import Table
-from rich.text import Text
-
-from any_llm import AnyLLM
+import time
+from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from rich.live import Live
+import ui
+import llm
 
 
-load_dotenv()
+# --- Commandes ---------------------------------------------------------------
+
+def show_help() -> None:
+    ui.print_key_value_panel("Commandes", [
+        ("chat",              "Démarrer ou reprendre une conversation (mono-modèle)"),
+        ("compare",           "Comparer les réponses de plusieurs modèles"),
+        ("setmodel",          "Changer de fournisseur ou de modèle actif"),
+        ("settings",          "Configurer température, max_tokens"),
+        ("loadmodels",        "Charger les modèles disponibles des fournisseurs"),
+        ("status",            "Afficher la configuration actuelle"),
+        ("reset",             "Effacer l'historique de conversation"),
+        ("help",              "Afficher ce message"),
+        ("exit / quit / bye", "Quitter le programme"),
+    ])
 
 
-PROVIDERS = {
-    provider.strip().lower(): {"label": provider.strip().capitalize(), "models": []}
-    for provider in os.getenv("PROVIDERS", "").split(",") if provider.strip()
-}
+def show_status() -> None:
+    if not llm.is_model_configured():
+        ui.print_error("Aucun fournisseur/modèle configuré, utilisez 'setmodel'")
+        return
+    ui.print_key_value_panel("État courant", [
+        ("Fournisseur", llm.get_active_provider()),
+        ("Modèle",      llm.state["model"]),
+        ("Messages",    f"{len(llm.state['history']) // 2} échanges en mémoire"),
+        ("Température", str(llm.state["temperature"])),
+        ("Max tokens",  str(llm.state["max_tokens"])),
+    ])
 
 
-state = {}
+def configure_settings() -> None:
+    ui.print_key_value_panel("Paramètres actuels", [
+        ("Température", str(llm.state["temperature"])),
+        ("Max tokens",  str(llm.state["max_tokens"])),
+    ])
+    ui.print_info("Appuyez sur Entrée pour conserver la valeur actuelle")
+
+    new_temp = ui.ask_float(
+        f"Température [dim](0.0 – 2.0, actuel : {llm.state['temperature']})[/dim]",
+        default=llm.state["temperature"],
+    )
+    if new_temp is not None:
+        llm.state["temperature"] = round(max(0.0, min(2.0, new_temp)), 2)
+
+    new_max = ui.ask_int(
+        f"Max tokens [dim](actuel : {llm.state['max_tokens']})[/dim]",
+        default=llm.state["max_tokens"],
+    )
+    if new_max is not None:
+        llm.state["max_tokens"] = max(1, new_max)
+
+    ui.print_text_panel(
+        f":wrench: [bold green]Paramètres mis à jour[/bold green]\n"
+        f"Température : {llm.state['temperature']}\n"
+        f"Max tokens  : {llm.state['max_tokens']}",
+        border_style="green",
+    )
 
 
-console = Console()
+def _select_provider(active: str = "") -> Optional[str]:
+    providers = llm.get_providers()
+    active_label = next((label for key, label in providers if key == active), "")
+    idx = ui.select_from_list(
+        "[not italic]:office_building:[/not italic] Fournisseurs disponibles",
+        [label for _, label in providers],
+        current=active_label,
+    )
+    return providers[idx][0] if idx is not None else None
 
 
-class NicePrompt(Prompt):
-    prompt_suffix = ">>> "
-
-
-class NiceIntPrompt(IntPrompt):
-    prompt_suffix = " ? "
-
-
-def print_with_margins(something):
-    console.print()
-    console.print(something)
-    console.print()
-
-
-def print_error(message):
-    console.print(f":rotating_light: [red]{message}[/red]")
-
-
-def init_default_state():
-    global state
-
-    default_model_raw = os.getenv("DEFAULT_MODEL", "")
-    
-    state = {
-        "provider": "",
-        "model": "",
-        "history": [],
-    }
-
-    if "/" in default_model_raw:
-        provider, model = default_model_raw.split('/', 1)
-        state["provider"] = provider.strip().lower()
-        state["model"] = model.strip()
-    elif default_model_raw != "":
-        print_error(f"Le format de DEFAULT_MODEL dans le .env est invalide (attendu: provider/model)")
-
-
-def show_status():
-    prov = PROVIDERS[state["provider"]]["label"]
-    model = state["model"]
-    turns = len(state["history"]) // 2
-    table = Table(title="État courant", show_header=False, box=None)
-    table.add_column(style="bold")
-    table.add_column(style="cyan")
-    table.add_row("Fournisseur", f"{prov}")
-    table.add_row("Modèle", f"{model}")
-    table.add_row("Messages", f"{turns} échanges en mémoire")
-    print_with_margins(Panel(table, expand=False))
-
-
-def show_help():
-    table = Table(title="Commandes", show_header=False, box=None)
-    table.add_column(style="bold")
-    table.add_column(style="cyan")
-    table.add_row("chat", "Démarrer ou reprendre une conversation")
-    table.add_row("setmodel", "Changer de fournisseur ou de modèle")
-    table.add_row("loadmodels", "Charger les modèles disponibles des fournisseurs")
-    table.add_row("status", "Afficher la configuration actuelle")
-    table.add_row("reset", "Effacer l'historique de conversation")
-    table.add_row("help", "Afficher ce message")
-    table.add_row("exit/quit/bye", "Quitter le programme")
-    print_with_margins(Panel(table, expand=False))
-
-
-def select_provider():
-    provider_keys = list(PROVIDERS.keys())
-    table = Table(title="[not italic]:office_building:[/not italic] Fournisseurs disponibles", header_style="bold", box=None)
-    table.add_column("#", style="bold")
-    table.add_column("Fournisseur")
-    table.add_column("Actuel")
-
-    for i, key in enumerate(provider_keys, 1):
-        info = PROVIDERS[key]
-        current = ":white_check_mark:" if key == state["provider"] else ""
-        table.add_row(str(i), info["label"], current)
-
-    table.add_row("0", "Annuler", "", "")
-    print_with_margins(Panel(table, expand=False))
-
-    try:
-        choice = NiceIntPrompt.ask("Fournisseur", default=0)
-    except (EOFError, KeyboardInterrupt):
-        console.print()
+def _select_model(provider_key: str, display_current: bool = True) -> Optional[str]:
+    models = llm.get_models(provider_key)
+    if not models:
+        ui.print_error(f"Aucun modèle chargé pour '{provider_key}', lancez 'loadmodels' d'abord")
         return None
-
-    if choice == 0:
-        return None
-
-    idx = choice - 1
-    if not (0 <= idx < len(provider_keys)):
-        console.print("[red]Choix invalide.[/red]")
-        return None
-
-    return provider_keys[idx]
+    current = (
+        llm.state["model"]
+        if display_current and provider_key == llm.state["provider"]
+        else ""
+    )
+    idx = ui.select_from_list("[not italic]:brain:[/not italic] Modèles disponibles", models, current=current)
+    return models[idx] if idx is not None else None
 
 
-def select_model(chosen_provider: str):
-    models = PROVIDERS[chosen_provider]["models"]
-    table = Table(title=f"[not italic]:brain:[/not italic] Modèles disponibles", header_style="bold", box=None)
-    table.add_column("#", style="bold")
-    table.add_column("Modèle")
-    table.add_column("Actuel")
-
-    for i, model in enumerate(models, 1):
-        current = ":white_check_mark:" if model == state["model"] and chosen_provider == state["provider"] else ""
-        table.add_row(str(i), model, current)
-
-    table.add_row("0", "Annuler", "")
-    print_with_margins(Panel(table, expand=False))
-
-    try:
-        choice = NiceIntPrompt.ask("Modèle", default=0)
-    except (EOFError, KeyboardInterrupt):
-        console.print()
-        return None
-
-    if choice == 0:
-        return None
-
-    idx = choice - 1
-    if not (0 <= idx < len(models)):
-        console.print("[red]Choix invalide.[/red]")
-        return None
-
-    return models[idx]
-
-
-def change_model():
-    chosen_provider = select_provider()
+def change_model() -> None:
+    chosen_provider = _select_provider(llm.state["provider"])
     if not chosen_provider:
         return
-
-    chosen_model = select_model(chosen_provider)
+    chosen_model = _select_model(chosen_provider)
     if not chosen_model:
         return
 
-    state["provider"] = chosen_provider
-    state["model"] = chosen_model
-    state["history"].clear()
+    llm.set_active_model(chosen_provider, chosen_model)
 
-    prov_label = PROVIDERS[chosen_provider]["label"]
-    print_with_margins(Panel(
-        f":brain: [bold green]Modèle sélectionné[/bold green]\n{prov_label} / {state['model']}\n[dim]Historique de conversation réinitialisé[/dim]",
-        border_style="green", expand=False
-    ))
+    ui.print_text_panel(
+        f":brain: [bold green]Modèle sélectionné[/bold green]\n"
+        f"{llm.get_active_provider()} / {chosen_model}\n"
+        f"[dim]Historique réinitialisé[/dim]",
+        border_style="green",
+    )
 
 
-def load_models():
-    with console.status("Chargement des modèles disponibles en cours...") as status:
-        providers = list(PROVIDERS.keys())
-        for provider in providers:
+def load_models() -> None:
+    with ui.spinner("Chargement des modèles en cours..."):
+        for provider_key, provider_label in llm.get_providers():
             try:
-                llm = AnyLLM.create(provider)
-                models = llm.list_models()
-                console.print(f"\n:brain: [green]Modèles disponibles pour '{provider}':[/green]")
-                modelIds = [model.id for model in models]
-                PROVIDERS[provider]['models'] = modelIds
-                for model in modelIds:
-                    console.print(f"  - [green]{model}[/green]")
+                model_ids = llm.fetch_models(provider_key)
+                ui.print_info(f":brain: {provider_label} — {len(model_ids)} modèles chargés")
+                for mid in model_ids:
+                    ui.print_info(f"  - {mid}")
             except Exception as e:
-                print_error(f"Erreur lors du chargement des modèles de '{provider}' : {e}")
+                ui.print_error(f"Erreur pour '{provider_label}' : {e}")
 
 
-def send_message(llm, user_input):
-    state["history"].append({"role": "user", "content": user_input})
+def clear_history() -> None:
+    llm.state["history"].clear()
+    ui.print_info("Historique effacé")
 
-    try:
-        response = llm.completion(
-            model=state["model"],
-            messages=state["history"]
+
+# --- Mode chat simple --------------------------------------------------------
+
+def mode_chat() -> None:
+    if not llm.is_model_configured():
+        ui.print_error("Aucun modèle configuré, utilisez 'setmodel'")
+        return
+ 
+    ui.print_text_panel(
+        f":speech_balloon: [bold cyan]Mode CHAT[/bold cyan]\n"
+        f"[dim]{llm.get_active_provider()} / {llm.state['model']}  |  "
+        f"temp={llm.state['temperature']}  max_tokens={llm.state['max_tokens']}[/dim]\n\n"
+        f"Tapez votre message. Commandes : [bold]/reset[/bold]  [bold]/bye[/bold]",
+        border_style="cyan",
+    )
+ 
+    while True:
+        user_input = ui.ask_text("Vous")
+        if user_input is None:
+            break
+ 
+        if user_input.lower() == "/bye":
+            ui.print_info("Sortie du chat")
+            break
+ 
+        if user_input.lower() == "/reset":
+            clear_history()
+            continue
+ 
+        llm.state["history"].append({"role": "user", "content": user_input})
+        try:
+            with ui.spinner("Réflexion en cours..."):
+                reply = llm.complete(
+                    llm.state["provider"],
+                    llm.state["model"],
+                    llm.state["history"],
+                    llm.state["temperature"],
+                    llm.state["max_tokens"],
+                )
+            llm.state["history"].append({"role": "assistant", "content": reply})
+            ui.print_message("Réponse", reply)
+        except Exception as e:
+            llm.state["history"].pop()
+            ui.print_error(f"Erreur lors de la complétion : {e}")
+ 
+
+# --- Mode comparaison --------------------------------------------------------
+
+def _select_models_for_compare() -> List[Tuple[str, str]]:
+    selected: List[Tuple[str, str]] = []
+
+    ui.print_text_panel(
+        ":brain: [bold cyan]Sélection des modèles à comparer[/bold cyan]\n"
+        "[dim]Ajoutez autant de modèles que souhaité. Entrez 0 pour terminer.[/dim]",
+        border_style="cyan",
+    )
+
+    while True:
+        if selected:
+            providers_by_key = {prov: label for prov, label, *_ in llm.get_providers()}
+            ui.print_key_value_panel(
+                "Modèles sélectionnés",
+                [
+                    (f"{i}.", f"{providers_by_key[prov]} / {model}")
+                    for i, (prov, model) in enumerate(selected, 1)
+                ],
+            )
+
+        action = ui.ask_int(
+            "[bold]Ajouter un modèle ?[/bold] [dim](1 = oui, 0 = terminer)[/dim]",
+            default=1 if not selected else 0,
         )
-        reply = response.choices[0].message.content
+        if action is None or action == 0:
+            break
 
-        state["history"].append({"role": "assistant", "content": reply})
+        provider_key = _select_provider()
+        if not provider_key:
+            continue
 
-    except Exception as e:
-        print_error(f"Erreur lors du chargement des modèles de '{provider}' : {e}")
-        reply = f"Erreur: {e}"
+        model = _select_model(provider_key, False)
+        if not model:
+            continue
 
-    return reply
+        pair = (provider_key, model)
+        if pair in selected:
+            ui.print_info("Ce modèle est déjà dans la liste.")
+        else:
+            selected.append(pair)
+            providers = dict(llm.get_providers())
+            ui.print_info(f"Ajouté : {providers[provider_key]} / {model}")
+
+    return selected
 
 
-def mode_chat():
-    provider = PROVIDERS[state["provider"]]["label"]
-    model = state["model"]
-    console.print(Panel(
-        f":speech_balloon: [bold cyan]Mode CHAT[/bold cyan]\n[dim]{provider} / {model}[/dim]\n\nTapez votre message. Commandes : [bold]/reset[/bold] [bold]/bye[/bold]",
-        border_style="cyan", expand=False
-    ))
+def _query_model(
+    provider_key: str,
+    model: str,
+    messages: List[Dict],
+    temperature: float,
+    max_tokens: int,
+) -> Tuple[str, str, str]:
+    start = time.perf_counter()
 
     try:
-        llm = AnyLLM.create(provider)
+        result = llm.complete_with_metadata(provider_key, model, messages, temperature, max_tokens)
+        elapsed = f"{time.perf_counter() - start:.2f} s"
+        total_tokens = result.get("total_tokens")
+        tokens = str(total_tokens) if total_tokens is not None else "—"
+
+        return provider_key, model, {
+            "status": "Terminé",
+            "elapsed": elapsed,
+            "tokens": tokens,
+            "reply": result.get("reply", ""),
+        }
+
     except Exception as e:
-        print_error(f"Erreur de création pour '{provider}' : {e}")
+        elapsed = f"{time.perf_counter() - start:.2f} s"
+        return provider_key, model, {
+            "status": "Erreur",
+            "elapsed": elapsed,
+            "tokens": "—",
+            "reply": f"Erreur : {e}",
+        }
+
+
+def mode_compare() -> None:
+    from rich.live import Live
+
+    selected = _select_models_for_compare()
+
+    if len(selected) < 2:
+        ui.print_error("Il faut au moins 2 modèles pour une comparaison.")
         return
 
-    while True:
-        try:
-            user_input = Prompt.ask("[bold green]Vous[/bold green]").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print()
-            break
+    providers_map = dict(llm.get_providers())
 
-        if not user_input:
-            continue
-
-        if user_input.lower() in ("/bye"):
-            console.print("[dim]Sortie du chat[/dim]")
-            break
-
-        if user_input.lower() == "/reset":
-            state["history"].clear()
-            console.print("[yellow]Historique effacé[/yellow]")
-            continue
-
-        with console.status("Réflexion en cours...") as status:
-            reply = send_message(llm, user_input)
-            console.print(f"[cyan]Réponse[/cyan]: {reply}")
-
-
-def main():
-    console.print("\n[cyan]Bonjour ![/cyan]\n")
-
-    init_default_state()
+    ui.print_text_panel(
+        f":bar_chart: [bold cyan]Mode COMPARE[/bold cyan]\n"
+        f"[dim]{len(selected)} modèles | "
+        f"temp={llm.state['temperature']} max_tokens={llm.state['max_tokens']}[/dim]\n\n"
+        f"Tapez votre question. Commande : [bold]/bye[/bold]",
+        border_style="cyan",
+    )
 
     while True:
+        user_input = ui.ask_text("Question")
+        if user_input is None:
+            break
+
+        if user_input.lower() == "/bye":
+            ui.print_info("Sortie du mode comparaison")
+            break
+
+        messages = [{"role": "user", "content": user_input}]
+
+        ordered_columns = [(providers_map[prov], model) for prov, model in selected]
+        key_map = {
+            (providers_map[prov], model): (prov, model)
+            for prov, model in selected
+        }
+
+        results: Dict[Tuple[str, str], Dict[str, str]] = {
+            (providers_map[prov], model): {
+                "status": "En attente",
+                "elapsed": "-",
+                "tokens": "-",
+                "reply": "...",
+            }
+            for prov, model in selected
+        }
+
+        with ThreadPoolExecutor(max_workers=len(selected)) as executor:
+            futures = {
+                executor.submit(
+                    _query_model,
+                    prov,
+                    model,
+                    messages,
+                    llm.state["temperature"],
+                    llm.state["max_tokens"],
+                ): (prov, model)
+                for prov, model in selected
+            }
+
+            with Live(
+                ui.print_compare_table(user_input, ordered_columns, results),
+                console=ui._console,
+                refresh_per_second=4,
+                vertical_overflow="visible",
+            ) as live:
+                for future in as_completed(futures):
+                    prov, model, result = future.result()
+                    display_key = (providers_map[prov], model)
+
+                    results[display_key] = {
+                        "status": result.get("status", "Terminé"),
+                        "elapsed": result.get("elapsed", "-"),
+                        "tokens": result.get("tokens", "-"),
+                        "reply": result.get("reply", ""),
+                    }
+
+                    live.update(
+                        ui.print_compare_table(user_input, ordered_columns, results)
+                    )
+
+
+# --- Boucle principale -------------------------------------------------------
+
+def main() -> None:
+    ui.print_info("\nBonjour !\n")
+
+    try:
+        llm.init_state()
+    except ValueError as e:
+        ui.print_error(str(e))
+
+    show_help()
+
+    while True:
         try:
-            cmd = NicePrompt.ask("\n", default="", show_default=False).strip().lower()
+            cmd = ui.ask_command()
         except (EOFError, KeyboardInterrupt):
             sys.exit(0)
 
         if not cmd:
             continue
 
-        if cmd == "chat":
-            mode_chat()
-        elif cmd == "setmodel":
-            change_model()
-        elif cmd == "loadmodels":
-            load_models()
-        elif cmd == "status":
-            show_status()
-        elif cmd == "reset":
-            state["history"].clear()
-            console.print("[yellow]Historique effacé.[/yellow]")
-        elif cmd == "help":
-            show_help()
-        elif cmd == "exit" or cmd == "quit" or cmd == "q" or cmd == "bye":
-            sys.exit(0)
-        else:
-            console.print(f"[red]Commande inconnue : '{cmd}'[/red]")
-            show_help()
+        match cmd:
+            case "chat":
+                mode_chat()
+            case "compare":
+                mode_compare()
+            case "setmodel":
+                change_model()
+            case "settings":
+                configure_settings()
+            case "loadmodels":
+                load_models()
+            case "status":
+                show_status()
+            case "reset":
+                clear_history()
+            case "help":
+                show_help()
+            case "exit" | "quit" | "q" | "bye":
+                sys.exit(0)
+            case _:
+                ui.print_error(f"Commande inconnue : '{cmd}'")
+                show_help()
 
 
 if __name__ == "__main__":
