@@ -5,7 +5,9 @@
 
 ## Exploring...
 
-* First, configuration with a `.env` file:
+> The AI specific functions are declared in [llm.py](llm.py) file.
+
+* First, configure the `.env` file:
 ```bash
 # Model providers (comma-separated list of providers)
 PROVIDERS=ollama,anthropic
@@ -26,15 +28,24 @@ ANTHROPIC_API_KEY="sk-ant-..."
 
 * Then, launch [exploring-any-llm.py](exploring-any-llm.py): with `any-llm`, the same code for any LLM providers, that's great !
   * Load the models:
+
 ![Load models](./img/load_models.png)
+
   * Select the model for the chat:
+
 ![Select a model](./img/select_model.png)
+
   * Chat:
+
 ![Chat](./img/chat.png)
+
   * Compare models - choose the models:
+
 ![Choose a model](./img/compare_choose_model_1.png)
 ![Choose another model](./img/compare_choose_model_2.png)
+
   * Compare models - ask something et see the result:
+
 ![Compare models](./img/compare_result.png)
 
 
