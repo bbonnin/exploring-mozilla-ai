@@ -1,11 +1,11 @@
 # Exploring Mozilla AI libs
 
-> Some examples for [any-llm](https://github.com/mozilla-ai/any-llm), any-agent, ...
+> Some examples for [any-llm](https://github.com/mozilla-ai/any-llm), [any-agent](https://github.com/mozilla-ai/any-agent), [any-guardrail](https://github.com/mozilla-ai/any-guardrail), ...
 
 
 ## Exploring...
 
-> The AI specific functions are declared in [llm.py](llm.py) file.
+> The AI specific functions are declared in [ai.py](ai.py) file.
 
 * First, configure the `.env` file:
 ```bash
